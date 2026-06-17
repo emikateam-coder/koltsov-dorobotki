@@ -30,4 +30,6 @@ jobs:
       - name: Build
         run: pnpm build
         env:
-          VITE_API_URL: https://example.com
+          # Same-origin: фронт ходит на тот же домен через Caddy reverse_proxy.
+          VITE_API_URL: ''
+          VITE_BASE_PATH: '/'

@@ -1,0 +1,93 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ secrets.SSH_PORT }}
+      DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve defaults
+        run: |
+          echo "SSH_PORT=${SSH_PORT:-22}" >> $GITHUB_ENV
+          echo "DEPLOY_PATH=${DEPLOY_PATH:-/opt/tma}" >> $GITHUB_ENV
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -p "$SSH_PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Ensure remote deploy dir exists
+        run: |
+          ssh -p "$SSH_PORT" -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" \
+            "mkdir -p '$DEPLOY_PATH'"
+
+      - name: Rsync sources
+        run: |
+          rsync -az --delete \
+            --exclude='.git' \
+            --exclude='node_modules' \
+            --exclude='dist' \
+            --exclude='data' \
+            --exclude='*.sqlite*' \
+            --exclude='.env' \
+            --exclude='*.docx' \
+            --exclude='*.doc' \
+            --exclude='*.pptx' \
+            -e "ssh -p $SSH_PORT -i ~/.ssh/id_deploy" \
+            ./ "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/"
+
+      - name: Write .env on runner
+        env:
+          DOMAIN: ${{ secrets.DOMAIN }}
+          ACME_EMAIL: ${{ secrets.ACME_EMAIL }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          ORGANIZER_TELEGRAM_IDS: ${{ secrets.ORGANIZER_TELEGRAM_IDS }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_NAME: ${{ secrets.GOOGLE_SHEET_NAME }}
+          GOOGLE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          umask 077
+          {
+            printf 'DOMAIN=%s\n' "$DOMAIN"
+            printf 'ACME_EMAIL=%s\n' "${ACME_EMAIL:-admin@$DOMAIN}"
+            printf 'BOT_TOKEN=%s\n' "$BOT_TOKEN"
+            printf 'ORGANIZER_TELEGRAM_IDS=%s\n' "$ORGANIZER_TELEGRAM_IDS"
+            printf 'WEB_APP_URL=%s\n' "https://$DOMAIN/"
+            printf 'API_ALLOWED_ORIGINS=%s\n' "https://$DOMAIN"
+            printf 'API_PORT=3001\n'
+            printf 'API_HOST=0.0.0.0\n'
+            printf 'NODE_ENV=production\n'
+            printf 'DATABASE_PATH=/data/app.sqlite\n'
+            if [ -n "$GOOGLE_SHEET_ID" ]; then
+              printf 'GOOGLE_SHEET_ID=%s\n' "$GOOGLE_SHEET_ID"
+              printf 'GOOGLE_SHEET_NAME=%s\n' "${GOOGLE_SHEET_NAME:-Registrations}"
+              # Кладём JSON в одинарных кавычках, чтобы compose не расширял $/`.
+              printf "GOOGLE_SERVICE_ACCOUNT_JSON='%s'\n" "${GOOGLE_SERVICE_ACCOUNT_JSON//\'/\'\\\'\'}"
+            fi
+          } > .env.deploy
+
+      - name: Upload .env
+        run: |
+          scp -P "$SSH_PORT" -i ~/.ssh/id_deploy .env.deploy \
+            "$SSH_USER@$SSH_HOST:$DEPLOY_PATH/.env"
+
+      - name: Build & restart compose
+        run: |
+          ssh -p "$SSH_PORT" -i ~/.ssh/id_deploy "$SSH_USER@$SSH_HOST" \
+            "cd '$DEPLOY_PATH' && docker compose pull --ignore-pull-failures || true && docker compose up -d --build --remove-orphans && docker image prune -f"

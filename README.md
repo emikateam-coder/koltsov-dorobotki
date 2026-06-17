@@ -140,105 +140,90 @@
 - `pnpm typecheck` — `tsc --noEmit` во всех пакетах.
 - `pnpm format` / `pnpm format:check` — Prettier.
 
-## Деплой через GitHub Actions
+## Деплой на свой VPS через GitHub Actions
 
-В репозитории уже настроены workflows в `.github/workflows/`:
+Архитектура: один сервер с Docker, всё крутится в Compose. Caddy на 80/443 сам получает Let's Encrypt сертификат и:
+
+- отдаёт собранную статику `apps/web` на корне домена;
+- проксирует `/me`, `/events*`, `/health` в контейнер `api` (то есть фронт и API на одном origin, CORS не нужен);
+- бот `apps/bot` живёт отдельным контейнером в long polling.
+
+Workflows в `.github/workflows/`:
 
 - `ci.yml` — typecheck + build на каждый push/PR в `main`.
-- `deploy-web.yml` — собирает `apps/web` и публикует на **GitHub Pages**.
-- `deploy-api.yml` — деплоит `apps/api` (Fastify + SQLite) на **Fly.io**.
-- `deploy-bot.yml` — деплоит `apps/bot` (grammY long polling) на **Fly.io**.
+- `deploy.yml` — на каждый push в `main` (или вручную) делает rsync исходников на VPS, кладёт `.env` из GitHub Secrets и запускает `docker compose up -d --build`.
 
-### 1. Подготовь Fly.io
+### 1. Подготовь сервер
 
-1. Установи флайктл локально (`brew install flyctl`) и `flyctl auth login`.
-2. Создай два приложения и привяжи их:
+Один раз — см. подробный гайд [`deploy/server-setup.md`](deploy/server-setup.md). Кратко:
 
-   ```bash
-   # API: при необходимости поменяй имя в apps/api/fly.toml
-   flyctl apps create tma-api --org personal
-   flyctl volumes create app_data --app tma-api --region fra --size 1
+- Поставь Docker + плагин compose.
+- Создай deploy-пользователя, добавь в группу `docker`, положи публичный SSH-ключ в `~/.ssh/authorized_keys`.
+- Создай `/opt/tma` с владельцем deploy.
+- Открой 22, 80, 443.
+- Настрой A-запись домена (`mini.example.com`) на IP сервера.
 
-   # Bot
-   flyctl apps create tma-bot --org personal
-   ```
+### 2. Сгенерируй SSH-ключ для CI
 
-3. Сгенерируй CI-токен и запиши его — он пойдёт в GitHub Secrets:
+На своей машине:
 
-   ```bash
-   flyctl tokens create deploy -x 8760h
-   ```
+```bash
+ssh-keygen -t ed25519 -f deploy_key -N "" -C "github-actions"
+# deploy_key.pub → /home/deploy/.ssh/authorized_keys на сервере
+# deploy_key      → GitHub Secrets как SSH_PRIVATE_KEY
+```
 
-4. Выставь рантайм-секреты приложениям (на самой Fly.io, не в GitHub):
+### 3. Положи секреты в GitHub
 
-   ```bash
-   # API
-   flyctl secrets set --app tma-api \
-     BOT_TOKEN=000000:AAA... \
-     API_ALLOWED_ORIGINS=https://<github-pages-domain> \
-     ORGANIZER_TELEGRAM_IDS=123,456 \
-     # опционально:
-     GOOGLE_SHEET_ID=... GOOGLE_SHEET_NAME=Registrations \
-     GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
+`Settings → Secrets and variables → Actions → New repository secret`:
 
-   # Bot
-   flyctl secrets set --app tma-bot \
-     BOT_TOKEN=000000:AAA... \
-     WEB_APP_URL=https://<github-pages-domain>
-   ```
+| Имя | Обязательно | Что |
+| --- | --- | --- |
+| `SSH_HOST` | да | IP или DNS сервера, например `203.0.113.10` или `mini.example.com` |
+| `SSH_USER` | да | пользователь, под которым деплоим (например `deploy`) |
+| `SSH_PRIVATE_KEY` | да | приватный ключ (вместе со строками `-----BEGIN`/`END`) |
+| `SSH_PORT` | нет | порт ssh, по умолчанию `22` |
+| `DEPLOY_PATH` | нет | каталог на сервере, по умолчанию `/opt/tma` |
+| `DOMAIN` | да | домен с TLS, например `mini.example.com` |
+| `ACME_EMAIL` | нет | email для Let's Encrypt, по умолчанию `admin@$DOMAIN` |
+| `BOT_TOKEN` | да | токен из @BotFather |
+| `ORGANIZER_TELEGRAM_IDS` | нет | id организаторов через запятую (`123,456`) |
+| `GOOGLE_SHEET_ID` | нет | ID Google-таблицы (если хочешь экспорт записей) |
+| `GOOGLE_SHEET_NAME` | нет | имя листа, по умолчанию `Registrations` |
+| `GOOGLE_SERVICE_ACCOUNT_JSON` | нет | содержимое JSON сервис-аккаунта (одной строкой) |
 
-### 2. Включи GitHub Pages
+Workflow сам сложит из них корректный `.env` на сервере и подставит:
 
-`Settings → Pages → Build and deployment → Source = GitHub Actions`.
-После первого успешного запуска `deploy-web.yml` сайт будет доступен по
-`https://<owner>.github.io/<repo>/`.
+- `WEB_APP_URL=https://$DOMAIN/`
+- `API_ALLOWED_ORIGINS=https://$DOMAIN`
 
-### 3. Добавь GitHub Secrets / Variables
-
-`Settings → Secrets and variables → Actions`:
-
-**Secrets:**
-
-| Имя | Зачем |
-| --- | --- |
-| `FLY_API_TOKEN` | токен из `flyctl tokens create deploy` (нужен для `deploy-api` и `deploy-bot`) |
-| `VITE_API_URL` | публичный HTTPS-URL Fly.io API (например `https://tma-api.fly.dev`) — embed в сборку web |
-
-`VITE_API_URL` можно положить и в **Variables** (тогда не нужен в Secrets) — workflow
-поддерживает оба варианта.
-
-### 4. Привяжи Mini App к боту
+### 4. Привяжи бота к Mini App
 
 В [@BotFather](https://t.me/BotFather):
 
-1. `/newbot` → получи `BOT_TOKEN`, положи его в Fly.io secrets обоих приложений.
-2. `/newapp` (или `/myapps`) → создай Mini App, в `Edit Web App URL` укажи
-   `https://<owner>.github.io/<repo>/`.
+1. `/newbot` → имя/username → получи `BOT_TOKEN` → положи в GitHub Secrets.
+2. `/newapp` → выбери бота → задай Web App URL = `https://$DOMAIN/`.
 
 ### 5. Запусти
 
-Любой коммит в `main`, изменивший соответствующее приложение, триггерит свой workflow.
-Можно запустить вручную: `Actions → выбрать workflow → Run workflow`.
+`Actions → Deploy → Run workflow` (или просто пуш в `main`). Через 1–3 минуты:
 
-Порядок при первом разворачивании:
+- Caddy получит сертификат и Mini App откроется на `https://$DOMAIN/`.
+- Бот ответит на `/start` кнопкой запуска приложения.
 
-1. `deploy-api` — поднимется Fly.io API; запиши его URL в `VITE_API_URL` (GitHub Secrets/Variables)
-   и в `API_ALLOWED_ORIGINS` (Fly.io secrets API).
-2. `deploy-web` — соберёт фронт с правильным `VITE_API_URL`, опубликует на Pages.
-3. `deploy-bot` — стартанёт long-polling бот.
+Логи и ручные команды — в [`deploy/server-setup.md`](deploy/server-setup.md).
 
-### Альтернативные хостинги
+### Локальный prod-прогон
 
-Если Fly.io не подходит, прежняя инструкция (Vercel + Railway/Render) тоже работает:
+На своей машине (с docker), создай `.env` рядом с `docker-compose.yml`:
 
-- **Frontend (`apps/web`)** на [Vercel](https://vercel.com):
-  - Project root: `apps/web`. Build: `pnpm --filter @app/web... build`. Output: `apps/web/dist`.
-  - Env: `VITE_API_URL` = публичный URL backend.
-- **Backend (`apps/api`) и бот (`apps/bot`)** на [Railway](https://railway.app) или
-  [Render](https://render.com):
-  - Два сервиса. `pnpm install --frozen-lockfile`, билды/старты как в `package.json`.
-  - Env: переменные из `.env.example`, у api добавь домен фронта в `API_ALLOWED_ORIGINS`,
-    у bot — продовый `WEB_APP_URL`.
+```bash
+cp .env.example .env
+# заполни DOMAIN=localhost (без TLS), BOT_TOKEN=..., и т.д.
+docker compose up --build
+```
+
+Caddy без публичного домена будет слушать по HTTP — для Telegram это не подойдёт, но проверить, что всё собирается, удобно.
 
 ## Что умеет приложение: запись на события
 
