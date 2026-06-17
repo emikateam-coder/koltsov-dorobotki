@@ -140,23 +140,105 @@
 - `pnpm typecheck` — `tsc --noEmit` во всех пакетах.
 - `pnpm format` / `pnpm format:check` — Prettier.
 
-## Деплой
+## Деплой через GitHub Actions
 
-- **Frontend (`apps/web`)** — [Vercel](https://vercel.com):
-  - Project root: `apps/web`.
-  - Build command: `pnpm --filter @app/web... build` (или `pnpm build`).
-  - Output: `apps/web/dist`.
+В репозитории уже настроены workflows в `.github/workflows/`:
+
+- `ci.yml` — typecheck + build на каждый push/PR в `main`.
+- `deploy-web.yml` — собирает `apps/web` и публикует на **GitHub Pages**.
+- `deploy-api.yml` — деплоит `apps/api` (Fastify + SQLite) на **Fly.io**.
+- `deploy-bot.yml` — деплоит `apps/bot` (grammY long polling) на **Fly.io**.
+
+### 1. Подготовь Fly.io
+
+1. Установи флайктл локально (`brew install flyctl`) и `flyctl auth login`.
+2. Создай два приложения и привяжи их:
+
+   ```bash
+   # API: при необходимости поменяй имя в apps/api/fly.toml
+   flyctl apps create tma-api --org personal
+   flyctl volumes create app_data --app tma-api --region fra --size 1
+
+   # Bot
+   flyctl apps create tma-bot --org personal
+   ```
+
+3. Сгенерируй CI-токен и запиши его — он пойдёт в GitHub Secrets:
+
+   ```bash
+   flyctl tokens create deploy -x 8760h
+   ```
+
+4. Выставь рантайм-секреты приложениям (на самой Fly.io, не в GitHub):
+
+   ```bash
+   # API
+   flyctl secrets set --app tma-api \
+     BOT_TOKEN=000000:AAA... \
+     API_ALLOWED_ORIGINS=https://<github-pages-domain> \
+     ORGANIZER_TELEGRAM_IDS=123,456 \
+     # опционально:
+     GOOGLE_SHEET_ID=... GOOGLE_SHEET_NAME=Registrations \
+     GOOGLE_SERVICE_ACCOUNT_JSON='{"type":"service_account",...}'
+
+   # Bot
+   flyctl secrets set --app tma-bot \
+     BOT_TOKEN=000000:AAA... \
+     WEB_APP_URL=https://<github-pages-domain>
+   ```
+
+### 2. Включи GitHub Pages
+
+`Settings → Pages → Build and deployment → Source = GitHub Actions`.
+После первого успешного запуска `deploy-web.yml` сайт будет доступен по
+`https://<owner>.github.io/<repo>/`.
+
+### 3. Добавь GitHub Secrets / Variables
+
+`Settings → Secrets and variables → Actions`:
+
+**Secrets:**
+
+| Имя | Зачем |
+| --- | --- |
+| `FLY_API_TOKEN` | токен из `flyctl tokens create deploy` (нужен для `deploy-api` и `deploy-bot`) |
+| `VITE_API_URL` | публичный HTTPS-URL Fly.io API (например `https://tma-api.fly.dev`) — embed в сборку web |
+
+`VITE_API_URL` можно положить и в **Variables** (тогда не нужен в Secrets) — workflow
+поддерживает оба варианта.
+
+### 4. Привяжи Mini App к боту
+
+В [@BotFather](https://t.me/BotFather):
+
+1. `/newbot` → получи `BOT_TOKEN`, положи его в Fly.io secrets обоих приложений.
+2. `/newapp` (или `/myapps`) → создай Mini App, в `Edit Web App URL` укажи
+   `https://<owner>.github.io/<repo>/`.
+
+### 5. Запусти
+
+Любой коммит в `main`, изменивший соответствующее приложение, триггерит свой workflow.
+Можно запустить вручную: `Actions → выбрать workflow → Run workflow`.
+
+Порядок при первом разворачивании:
+
+1. `deploy-api` — поднимется Fly.io API; запиши его URL в `VITE_API_URL` (GitHub Secrets/Variables)
+   и в `API_ALLOWED_ORIGINS` (Fly.io secrets API).
+2. `deploy-web` — соберёт фронт с правильным `VITE_API_URL`, опубликует на Pages.
+3. `deploy-bot` — стартанёт long-polling бот.
+
+### Альтернативные хостинги
+
+Если Fly.io не подходит, прежняя инструкция (Vercel + Railway/Render) тоже работает:
+
+- **Frontend (`apps/web`)** на [Vercel](https://vercel.com):
+  - Project root: `apps/web`. Build: `pnpm --filter @app/web... build`. Output: `apps/web/dist`.
   - Env: `VITE_API_URL` = публичный URL backend.
-  - В @BotFather укажи итоговый домен Vercel в качестве Web App URL.
-
-- **Backend (`apps/api`) и бот (`apps/bot`)** — [Railway](https://railway.app)
-  или [Render](https://render.com):
-  - Два отдельных сервиса (web service для api и worker для bot).
-  - Install: `pnpm install --frozen-lockfile`.
-  - Build api: `pnpm --filter @app/api... build`, start: `pnpm --filter @app/api start`.
-  - Build bot: `pnpm --filter @app/bot... build`, start: `pnpm --filter @app/bot start`.
-  - Env: скопируй переменные из `.env.example`. У api добавь домен Vercel в
-    `API_ALLOWED_ORIGINS`. У bot — продовый `WEB_APP_URL`.
+- **Backend (`apps/api`) и бот (`apps/bot`)** на [Railway](https://railway.app) или
+  [Render](https://render.com):
+  - Два сервиса. `pnpm install --frozen-lockfile`, билды/старты как в `package.json`.
+  - Env: переменные из `.env.example`, у api добавь домен фронта в `API_ALLOWED_ORIGINS`,
+    у bot — продовый `WEB_APP_URL`.
 
 ## Что умеет приложение: запись на события
 

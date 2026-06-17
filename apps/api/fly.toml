@@ -1,0 +1,41 @@
+# Fly.io конфиг для apps/api
+# Создание приложения (один раз):
+#   flyctl launch --no-deploy --copy-config --name <APP_NAME> --region fra
+#   flyctl volumes create app_data --region fra --size 1
+# Перед первым деплоем выставь секреты:
+#   flyctl secrets set BOT_TOKEN=... API_ALLOWED_ORIGINS=... ORGANIZER_TELEGRAM_IDS=...
+
+app = "tma-api"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  API_PORT = "3001"
+  API_HOST = "0.0.0.0"
+  DATABASE_PATH = "/data/app.sqlite"
+  NODE_ENV = "production"
+
+[mounts]
+  source = "app_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

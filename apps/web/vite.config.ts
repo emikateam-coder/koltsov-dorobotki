@@ -10,7 +10,12 @@ export default defineConfig(({ mode }) => {
     '/events': { target: apiTarget, changeOrigin: true },
   } as const;
 
+  // Base path для деплоя на GitHub Pages в подкаталог /<repo>/.
+  // Передаётся CI как переменная окружения VITE_BASE_PATH (например "/koltsov-dorobotki/").
+  const base = env.VITE_BASE_PATH && env.VITE_BASE_PATH.length > 0 ? env.VITE_BASE_PATH : '/';
+
   return {
+    base,
     plugins: [react()],
     server: {
       host: true,

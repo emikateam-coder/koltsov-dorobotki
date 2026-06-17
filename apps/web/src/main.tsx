@@ -22,7 +22,7 @@ if (!container) {
 createRoot(container).render(
   <React.StrictMode>
     <AppRoot appearance={colorScheme} platform={platform}>
-      <BrowserRouter>
+      <BrowserRouter basename={import.meta.env.BASE_URL}>
         <MeProvider>
           <App />
         </MeProvider>

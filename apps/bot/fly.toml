@@ -1,0 +1,25 @@
+# Fly.io конфиг для apps/bot (long polling, без публичного порта)
+# Создание приложения (один раз):
+#   flyctl launch --no-deploy --copy-config --name <APP_NAME> --region fra
+# Перед первым деплоем выставь секреты:
+#   flyctl secrets set BOT_TOKEN=... WEB_APP_URL=...
+
+app = "tma-bot"
+primary_region = "fra"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  NODE_ENV = "production"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256
+
+[deploy]
+  strategy = "immediate"
+
+[processes]
+  app = "node dist/index.js"
