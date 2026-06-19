@@ -155,13 +155,17 @@ Workflows в `.github/workflows/`:
 
 ### 1. Подготовь сервер
 
-Один раз — см. подробный гайд [`deploy/server-setup.md`](deploy/server-setup.md). Кратко:
+Один раз. Делается одной командой:
 
-- Поставь Docker + плагин compose.
-- Создай deploy-пользователя, добавь в группу `docker`, положи публичный SSH-ключ в `~/.ssh/authorized_keys`.
-- Создай `/opt/tma` с владельцем deploy.
-- Открой 22, 80, 443.
-- Настрой A-запись домена (`mini.example.com`) на IP сервера.
+```bash
+ssh root@SERVER_IP
+curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/<BRANCH>/deploy/bootstrap.sh \
+  | DEPLOY_USER=deploy SSH_PUB_KEY="ssh-ed25519 AAAA..." bash
+```
+
+Скрипт ставит Docker + compose, создаёт пользователя `deploy` с группой `docker`, кладёт публичный SSH-ключ, поднимает UFW (22/80/443), создаёт `/opt/tma`. Остаётся только сделать DNS A-запись `DOMAIN → IP сервера` в админке регистратора (Reg.ru / Cloudflare / Namecheap / GoDaddy и т.п.) — скриптом DNS не настраивается, это делается у твоего регистратора.
+
+Подробный гайд: [`deploy/server-setup.md`](deploy/server-setup.md).
 
 ### 2. Сгенерируй SSH-ключ для CI
 

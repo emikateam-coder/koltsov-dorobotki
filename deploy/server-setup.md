@@ -5,77 +5,120 @@
 ## Требования
 
 - Публичный IP, открытые порты `22`, `80`, `443`.
-- Домен (например `mini.example.com`), A-запись которого указывает на IP сервера. Без домена TLS не получишь — Telegram Mini App требует HTTPS.
+- Домен (например `mini.example.com`) с A-записью на IP сервера. Без домена TLS не получишь — Telegram Mini App требует HTTPS.
 - ≥ 1 ГБ RAM, ≥ 10 ГБ диска. Минимальной VPS за 4 €/мес обычно хватает.
 
-## Шаги
+## DNS A-запись (делается один раз в админке твоего регистратора)
 
-1. Подключись по SSH под рутом:
+Где именно — зависит от того, у кого куплен домен:
 
-   ```bash
-   ssh root@SERVER_IP
-   ```
+- **Reg.ru / Рег.ру** → DNS-серверы и зона → Управление DNS → Добавить запись A.
+- **Cloudflare** → твой домен → DNS → Add record → Type A.
+- **Namecheap** → Domain List → Manage → Advanced DNS → Add new record → A Record.
+- **GoDaddy** → My Products → DNS → Add → A.
+- **Reg.com / Beget / Timeweb / SprintHost** — похожий пункт «DNS-записи / Управление зоной».
 
-2. Создай deploy-пользователя (можно `deploy`):
+В записи указываешь:
 
-   ```bash
-   adduser --disabled-password --gecos "" deploy
-   usermod -aG sudo deploy
-   ```
+| Поле | Значение |
+| --- | --- |
+| Type | `A` |
+| Host / Subdomain | `mini` (если хочешь `mini.example.com`) или `@` (если хочешь корневой `example.com`) |
+| Value / Points to | публичный IP сервера, например `203.0.113.10` |
+| TTL | минимально допустимый (300 с / 1 минута) |
 
-3. Положи свой публичный SSH-ключ:
+Проверка через 1–10 минут:
 
-   ```bash
-   mkdir -p /home/deploy/.ssh
-   # Вставь сюда тот же публичный ключ, парный к SSH_PRIVATE_KEY из GitHub Secrets.
-   echo 'ssh-ed25519 AAAA...' > /home/deploy/.ssh/authorized_keys
-   chown -R deploy:deploy /home/deploy/.ssh
-   chmod 700 /home/deploy/.ssh
-   chmod 600 /home/deploy/.ssh/authorized_keys
-   ```
+```bash
+dig +short mini.example.com   # должен вернуть твой IP
+```
 
-4. Установи Docker и плагин compose:
+## Установка Docker, deploy-пользователя и фаервола одной командой
 
-   ```bash
-   apt-get update
-   apt-get install -y ca-certificates curl rsync
-   install -m 0755 -d /etc/apt/keyrings
-   curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-     | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-   chmod a+r /etc/apt/keyrings/docker.gpg
-   echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-     https://download.docker.com/linux/ubuntu $(. /etc/os-release; echo "$VERSION_CODENAME") stable" \
-     > /etc/apt/sources.list.d/docker.list
-   apt-get update
-   apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-   ```
+В репозитории есть скрипт [`deploy/bootstrap.sh`](bootstrap.sh), который делает всё сразу:
 
-5. Дай deploy-пользователю запускать docker без sudo:
+- ставит Docker CE + плагин compose из официального репозитория;
+- создаёт пользователя `deploy`, добавляет его в группу `docker`;
+- кладёт твой публичный SSH-ключ в `/home/deploy/.ssh/authorized_keys`;
+- (опционально) отключает root и парольную аутентификацию в SSH;
+- настраивает UFW и открывает только 22/80/443;
+- создаёт `/opt/tma` с владельцем `deploy`.
 
-   ```bash
-   usermod -aG docker deploy
-   ```
+### Шаг 1. Сгенерируй SSH-ключ для GitHub Actions
 
-6. Создай каталог для приложения:
+На своей машине:
 
-   ```bash
-   mkdir -p /opt/tma
-   chown -R deploy:deploy /opt/tma
-   ```
+```bash
+ssh-keygen -t ed25519 -f ~/.ssh/github_actions_tma -N "" -C "github-actions"
+# приватный ключ ~/.ssh/github_actions_tma → потом в GitHub Secret SSH_PRIVATE_KEY
+# публичный ключ ~/.ssh/github_actions_tma.pub → его передаём в bootstrap
+```
 
-7. (Опционально) поставь UFW и открой только нужные порты:
+### Шаг 2. Запусти bootstrap на сервере
 
-   ```bash
-   apt-get install -y ufw
-   ufw allow 22/tcp
-   ufw allow 80/tcp
-   ufw allow 443/tcp
-   ufw --force enable
-   ```
+Подключись по SSH под рутом (как именно — зависит от провайдера; обычно root-пароль присылают на email после создания VPS):
 
-Готово. Дальше всё делает GitHub Actions: rsync кода, генерация `.env`, `docker compose up -d --build`. Caddy сам получит Let's Encrypt сертификат для `DOMAIN` при первом старте.
+```bash
+ssh root@SERVER_IP
+```
 
-## Откат / ручное вмешательство
+Дальше один из двух способов.
+
+**A. Скачать и запустить из ветки в репо:**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/<OWNER>/<REPO>/<BRANCH>/deploy/bootstrap.sh \
+  | DEPLOY_USER=deploy \
+    SSH_PUB_KEY="ssh-ed25519 AAAA...твой публичный ключ..." \
+    bash
+```
+
+**B. Скопировать вручную:**
+
+```bash
+# на своей машине:
+scp deploy/bootstrap.sh root@SERVER_IP:/tmp/
+
+# на сервере:
+DEPLOY_USER=deploy \
+SSH_PUB_KEY="$(cat /tmp/github_actions_tma.pub)" \
+bash /tmp/bootstrap.sh
+```
+
+Опции (через ENV):
+
+| Переменная | По умолчанию | Что |
+| --- | --- | --- |
+| `DEPLOY_USER` | `deploy` | имя пользователя для деплоя |
+| `DEPLOY_PATH` | `/opt/tma` | каталог проекта |
+| `SSH_PUB_KEY` | — *(обязательно)* | публичный ключ, парный к GitHub Secret `SSH_PRIVATE_KEY` |
+| `SSH_HARDEN` | `0` | `1` — отключить пароли и root в sshd |
+| `ENABLE_UFW` | `1` | `0` — не трогать фаервол |
+
+### Шаг 3. Проверь подключение
+
+С твоей машины:
+
+```bash
+ssh -i ~/.ssh/github_actions_tma deploy@SERVER_IP "docker --version && docker compose version"
+```
+
+Должно вернуть версии Docker и Compose.
+
+### Шаг 4. Дальше — GitHub
+
+Положи в `Settings → Secrets and variables → Actions`:
+
+- `SSH_HOST` = IP сервера (или DNS, например `mini.example.com`)
+- `SSH_USER` = `deploy`
+- `SSH_PRIVATE_KEY` = содержимое `~/.ssh/github_actions_tma` (с `-----BEGIN/END-----`)
+- `DOMAIN` = `mini.example.com`
+- `BOT_TOKEN` = из @BotFather
+- остальные опциональные — см. README
+
+`Actions → Deploy → Run workflow`. Caddy сам поднимет TLS для `DOMAIN`.
+
+## Откат / ручные операции
 
 Зайти на сервер можно в любой момент и работать руками:
 
@@ -83,26 +126,17 @@
 ssh deploy@SERVER_IP
 cd /opt/tma
 
-# Логи
 docker compose logs -f api
 docker compose logs -f bot
 docker compose logs -f web
 
-# Перезапуск
 docker compose restart api
-
-# Полный ребилд (после ручных правок кода/.env)
 docker compose up -d --build
-
-# Откат к предыдущему коммиту:
-# просто запусти Actions → Deploy → Run workflow на нужном коммите
-# (или сделай git revert и push в main).
 ```
 
-База SQLite живёт в Docker volume `tma_api_data`. Бэкапы:
+База SQLite живёт в Docker volume `tma_api_data`. Бэкап:
 
 ```bash
-# дамп
 docker run --rm -v tma_api_data:/data -v "$PWD":/backup alpine \
   sh -c 'cp /data/app.sqlite /backup/app.sqlite.$(date +%F).bak'
 ```
