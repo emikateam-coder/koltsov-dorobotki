@@ -1,0 +1,31 @@
+# Серверный Caddyfile: TLS, статика SPA и прокси на api.
+# DOMAIN подставляется из переменной окружения (например mini.example.com).
+# Если домена нет, Caddy слушает 80-й порт без TLS (удобно для отладки).
+{
+	# Email используется Let's Encrypt для уведомлений.
+	email {$ACME_EMAIL:admin@example.com}
+	# По умолчанию Caddy сам получает сертификат для {$DOMAIN}.
+	auto_https disable_redirects
+}
+
+{$DOMAIN::80} {
+	encode zstd gzip
+
+	# API проксируется на сервис api в той же docker-сети.
+	@api {
+		path /me /me/* /events /events/* /health /health/*
+	}
+	reverse_proxy @api api:3001 {
+		header_up X-Forwarded-Host {host}
+	}
+
+	# SPA: статика + fallback на index.html для клиентского роутинга.
+	root * /srv
+	try_files {path} /index.html
+	file_server
+
+	log {
+		output stdout
+		format console
+	}
+}

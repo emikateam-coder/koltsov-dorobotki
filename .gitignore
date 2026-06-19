@@ -1,0 +1,29 @@
+node_modules
+dist
+.env
+*.tsbuildinfo
+
+# local data (SQLite)
+data
+*.sqlite
+*.sqlite-journal
+*.sqlite-wal
+*.sqlite-shm
+
+# Google service account
+service-account.json
+*-service-account.json
+
+# editor / OS
+.DS_Store
+.vscode
+.idea
+
+# logs
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Vite
+.vite

@@ -1,0 +1,74 @@
+# Production docker-compose.
+# Запускается на VPS. Все секреты берутся из файла .env рядом с compose
+# (его на сервер кладёт workflow .github/workflows/deploy.yml из GitHub Secrets).
+
+name: tma
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_PATH: /data/app.sqlite
+      API_HOST: 0.0.0.0
+      API_PORT: "3001"
+      NODE_ENV: production
+    expose:
+      - "3001"
+    volumes:
+      - api_data:/data
+    networks:
+      - app
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3001/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+
+  bot:
+    build:
+      context: .
+      dockerfile: apps/bot/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      NODE_ENV: production
+    networks:
+      - app
+    depends_on:
+      - api
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_URL: ""
+        VITE_BASE_PATH: "/"
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL:-admin@example.com}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+    networks:
+      - app
+
+networks:
+  app:
+    driver: bridge
+
+volumes:
+  api_data:
+  caddy_data:
+  caddy_config:
